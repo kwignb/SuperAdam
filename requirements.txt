@@ -1,0 +1,6 @@
+jax
+jaxlib
+neural-tangents
+omegaconf
+pandas
+tensorflow-datasets
