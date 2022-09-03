@@ -1,4 +1,4 @@
-import sys
+import os, sys
 from os.path import join, dirname
 
 import numpy as np
@@ -71,8 +71,8 @@ def main():
     # build the network (TODO: Adapt CNN)
     _layers = []
     assert n_layers > 1
-    w_std = np.sqrt(weight_variance)
-    b_std = np.sqrt(bias_variance)
+    w_std = jnp.sqrt(weight_variance)
+    b_std = jnp.sqrt(bias_variance)
     for i in range(n_layers - 1):
         _layers += [
             stax.Dense(n_width, W_std=w_std, b_std=b_std, parameterization='ntk'),
@@ -115,6 +115,16 @@ def main():
     fx0_test = apply_fn(params, x_test)
     
     print(f'Training for {epochs} epochs.')
+    
+    entries = ['epoch', 'train_accuracy', 'train_loss', 'test_accuracy', 'test_loss']
+    entry_widths = [max(11, len(s)) for s in entries]
+    templates = []
+    for entry, w in zip(entries, entry_widths):
+        templates.append((entry, '{:<%dg}  ' % w, ' ' * (w + 2)))
+
+    header = '  '.join(('{:%d}' % w for w in entry_widths)).format(*entries)
+    print(header)
+    
     results = []
     for i in range(epochs + 1):
         if i == 0:
@@ -141,9 +151,20 @@ def main():
             'test_loss': test_loss
         }
         
-        print(log)
-        
+        # print report
+        report, last_entry = '', ''
+        for entry, template, empty in templates:
+            if entry in log:
+                report += template.format(log[entry])
+            else:
+                report += empty
+            last_entry = entry
+        print(report)
+                
         results.append(log)
+        
+    if not os.path.exists('results'):
+        os.makedirs('results')
         
     df = pd.json_normalize(results)
     df.to_csv('results/empirical_ngd.csv')

@@ -3,7 +3,7 @@ DATA:
   TRAIN_SIZE: 128
   TEST_SIZE: 32
   N_CLASSES: 2
-  TARGET_CLASSES: [0, 1]
+  TARGET_CLASSES: [1, 7]
   FLATTEN: true
   NORMALIZE: true
   SAVE_DIR: datasets
