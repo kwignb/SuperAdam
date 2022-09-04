@@ -15,6 +15,8 @@ sys.path.append(join(dirname(__file__), ".."))
 from src.natural_gradient import natural_gradient_mse_fn
 from src.utils import read_yaml, create_dataset
 
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
 
 def accuracy(y, y_hat):
     if y_hat.shape[-1] == 1:
@@ -120,13 +122,13 @@ def main():
     entry_widths = [max(11, len(s)) for s in entries]
     templates = []
     for entry, w in zip(entries, entry_widths):
-        templates.append((entry, '{:<%dg}  ' % w, ' ' * (w + 2)))
+        templates.append((entry, '{:<%dg}  ' % w, ' ' * (w+2)))
 
     header = '  '.join(('{:%d}' % w for w in entry_widths)).format(*entries)
     print(header)
     
     results = []
-    for i in range(epochs + 1):
+    for i in range(epochs):
         if i == 0:
             # init values
             fx_train, fx_test = fx0_train, fx0_test
@@ -144,7 +146,7 @@ def main():
         test_acc = accuracy(fx_test, y_test).tolist()
         
         log = {
-            'epoch': i,
+            'epoch': i+1,
             'train_accuracy': train_acc,
             'train_loss': train_loss,
             'test_accuracy': test_acc,
