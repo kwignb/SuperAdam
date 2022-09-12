@@ -74,6 +74,7 @@ def natural_gradient_mse_fn(f, output_dimension, damping, diag_reg,
         nt.empirical_ntk_fn(f, trace_axes=()),
         kernel_batch_size, device_count, store_on_device
         )
+    
     _solve_w_damping = get_solver_by_damping_value(damping, diag_reg)
     
     def natural_gradient_fn(params, x, y):
@@ -83,3 +84,22 @@ def natural_gradient_mse_fn(f, output_dimension, damping, diag_reg,
         return _vjp(vec, f, params, x)
     
     return natural_gradient_fn
+
+
+def empirical_natural_gradient_fn(f):
+    
+    def fisher_vjp(f_, params, x):
+        _, R_z = jax.jvp(f_, (params,), (x,))
+        _, f_vjp = jax.vjp(f_, params)
+        return f_vjp(R_z)[0]
+
+    def gradient_fn(params, x, y):
+        loss = lambda params, x, y: 0.5 * jnp.mean(
+            jnp.sum((f(params, x) - y) ** 2, axis=1)
+            )
+        grads = jax.grad(loss)(params, x, y)
+        fvp = lambda v: fisher_vjp(loss, params, v)
+        grad_fn, _ = jsp.sparse.linalg.cg(fvp, grads, maxiter=10)
+        return grad_fn
+    
+    return gradient_fn

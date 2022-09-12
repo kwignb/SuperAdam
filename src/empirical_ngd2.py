@@ -9,10 +9,10 @@ import jax.numpy as jnp
 from jax import random
 from jax.example_libraries import optimizers
 
-import neural_tangents as nt
 from neural_tangents import stax
 
 sys.path.append(join(dirname(__file__), ".."))
+from src.natural_gradient import empirical_natural_gradient_fn
 from src.utils import read_yaml, create_dataset
 
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
@@ -27,7 +27,7 @@ def accuracy(y, y_hat):
 def main():
     
     # load config
-    cfg = read_yaml(yaml_path='src/configs/generalized_adam.yaml')
+    cfg = read_yaml(yaml_path='src/configs/empirical_ngd.yaml')
     
     # parameters in config
     n_classes = cfg.DATA.N_CLASSES
@@ -40,10 +40,13 @@ def main():
     
     batch_size = cfg.OPTIMIZER.BATCH_SIZE
     learning_rate = cfg.OPTIMIZER.LEARNING_RATE
+    damping = cfg.OPTIMIZER.DAMPING
+    diag_reg = cfg.OPTIMIZER.DIAG_REG
     
     epochs = cfg.GENERAL.EPOCHS
     devices = cfg.GENERAL.DEVICES
     random_seed = cfg.GENERAL.SEED
+    store_on_device = cfg.GENERAL.STORE_ON_DEVICE
     
     # setup device
     if devices is None:
@@ -89,15 +92,20 @@ def main():
     opt_init, opt_apply, get_params = optimizers.sgd(learning_rate)
     opt_state = opt_init(params)
     
-    ntk_fn = nt.empirical_ntk_fn(
-        f=apply_fn, trace_axes=(-1,), vmap_axes=0,
-        implementation=nt.NtkImplementation.JACOBIAN_CONTRACTION
-        )
+    loss = lambda f, y: 0.5 * jnp.mean(jnp.sum((f - y) ** 2, axis=1))
     
-    loss = lambda params, x, y, G_inv: 0.5 * jnp.mean(
-        jnp.sum((apply_fn(params, x) - y).T @ G_inv @ (apply_fn(params, x) - y), axis=1)
-        )
-        
+    # kwargs = dict(
+    #     f=apply_fn,
+    #     output_dimension=n_outputs,
+    #     damping=damping,
+    #     diag_reg=diag_reg,
+    #     kernel_batch_size=batch_size,
+    #     device_count=devices,
+    #     store_on_device=store_on_device
+    # )
+    
+    grad_fn = empirical_natural_gradient_fn(f=apply_fn)
+    
     print('========================')
     for keys, vals in cfg.items():
         for key, val in vals.items():
@@ -107,17 +115,6 @@ def main():
     # Get initial values of the network in function space.
     fx0_train = apply_fn(params, x_train)
     fx0_test = apply_fn(params, x_test)
-    
-    # Get Neural Tangent Kernels
-    ntk_train = ntk_fn(x_train, None, params)
-    ntk_test = ntk_fn(x_test, None, params)
-    
-    # Get their inverse
-    ntk_train_inv = jnp.linalg.inv(ntk_train)
-    ntk_test_inv = jnp.linalg.inv(ntk_test)
-    
-    # Define the gradient
-    grad_fn = lambda params, x, y, G_inv: jax.grad(loss)(params, x, y, G_inv)
     
     print(f'Training for {epochs} epochs.')
     
@@ -136,16 +133,16 @@ def main():
             # init values
             fx_train, fx_test = fx0_train, fx0_test
         else:
-            args = [params, x_train, y_train, ntk_train_inv]
+            args = [params, x_train, y_train]
             grads = grad_fn(*args)
             opt_state = opt_apply(i, grads, opt_state)
             params = get_params(opt_state)
             fx_train = apply_fn(params, x_train)
             fx_test = apply_fn(params, x_test)
-
-        train_loss = loss(params, x_train, y_train, ntk_train_inv).tolist()
+            
+        train_loss = loss(fx_train, y_train).tolist()
         train_acc = accuracy(fx_train, y_train).tolist()
-        test_loss = loss(params, x_test, y_test, ntk_test_inv).tolist()
+        test_loss = loss(fx_test, y_test).tolist()
         test_acc = accuracy(fx_test, y_test).tolist()
         
         log = {
@@ -172,7 +169,8 @@ def main():
         os.makedirs('results')
         
     df = pd.json_normalize(results)
-    df.to_csv('results/generalized_adam.csv')
+    df.to_csv('results/empirical_ngd.csv')
     
 if __name__ == '__main__':
     main()
+    

@@ -132,3 +132,5 @@ dmypy.json
 datasets/
 tensorflow_datasets/
 results/
+notebooks/datasets/
+notebooks/tensorflow_datasets
