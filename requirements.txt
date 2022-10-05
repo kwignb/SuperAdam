@@ -1,6 +1,8 @@
 jax
 jaxlib
+matplotlib
 neural-tangents
 omegaconf
 pandas
+seaborn
 tensorflow-datasets

@@ -6,14 +6,15 @@ import pandas as pd
 
 import jax
 import jax.numpy as jnp
-from jax import random
+from jax import grad, jit, random
 from jax.example_libraries import optimizers
 
 import neural_tangents as nt
 from neural_tangents import stax
 
 sys.path.append(join(dirname(__file__), ".."))
-from src.utils import read_yaml, create_dataset
+from src.utils import read_yaml, create_dataset, load_dataset
+from src.natural_gradient import flatten_lg, flatten_features
 
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
@@ -32,6 +33,8 @@ def main():
     # parameters in config
     n_classes = cfg.DATA.N_CLASSES
     target_classes = cfg.DATA.TARGET_CLASSES
+    data_num = cfg.DATA.TRAIN_SIZE + cfg.DATA.TEST_SIZE
+    use_npz = cfg.DATA.USE_NPZ
     
     n_layers = cfg.MODEL.N_LAYERS
     n_width = cfg.MODEL.N_WIDTH
@@ -60,7 +63,10 @@ def main():
     
     assert len(target_classes) == n_classes
     
-    x_train, y_train, x_test, y_test, target_classes = create_dataset(cfg)
+    if use_npz:
+        x_train, y_train, x_test, y_test, target_classes = load_dataset(cfg)
+    else:
+        x_train, y_train, x_test, y_test, target_classes = create_dataset(cfg)
     
     if n_classes == 2:
         n_outputs = 1
@@ -89,15 +95,28 @@ def main():
     opt_init, opt_apply, get_params = optimizers.sgd(learning_rate)
     opt_state = opt_init(params)
     
-    ntk_fn = nt.empirical_ntk_fn(
-        f=apply_fn, trace_axes=(-1,), vmap_axes=0,
+    ntk_fn = jit(nt.empirical_ntk_fn(
+        f=apply_fn, trace_axes=(), vmap_axes=0,
         implementation=nt.NtkImplementation.JACOBIAN_CONTRACTION
-        )
-    
-    loss = lambda params, x, y, G_inv: 0.5 * jnp.mean(
-        jnp.sum((apply_fn(params, x) - y).T @ G_inv @ (apply_fn(params, x) - y), axis=1)
-        )
+        ))
         
+    # Get Neural Tangent Kernels
+    ntk_train = flatten_features(ntk_fn(x_train, None, params).block_until_ready())
+    ntk_test = flatten_features(ntk_fn(x_test, None, params).block_until_ready())
+    
+    # Get their inverse
+    ntk_train_inv = jnp.linalg.inv(ntk_train)
+    ntk_test_inv = jnp.linalg.inv(ntk_test)
+    
+    def generalized_loss(params, x, y, G):
+        fx = apply_fn(params, x)
+        error = flatten_lg(fx - y)
+        loss = 0.5 * jnp.mean(error.T @ G @ error)
+        return loss
+    
+    # Define the gradient
+    grad_fn = jit(lambda params, x, y, G: grad(generalized_loss)(params, x, y, G))
+    
     print('========================')
     for keys, vals in cfg.items():
         for key, val in vals.items():
@@ -108,20 +127,12 @@ def main():
     fx0_train = apply_fn(params, x_train)
     fx0_test = apply_fn(params, x_test)
     
-    # Get Neural Tangent Kernels
-    ntk_train = ntk_fn(x_train, None, params)
-    ntk_test = ntk_fn(x_test, None, params)
-    
-    # Get their inverse
-    ntk_train_inv = jnp.linalg.inv(ntk_train)
-    ntk_test_inv = jnp.linalg.inv(ntk_test)
-    
-    # Define the gradient
-    grad_fn = lambda params, x, y, G_inv: jax.grad(loss)(params, x, y, G_inv)
-    
     print(f'Training for {epochs} epochs.')
     
-    entries = ['epoch', 'train_accuracy', 'train_loss', 'test_accuracy', 'test_loss']
+    entries = [
+        'epoch', 'train_accuracy (g-Adam)', 'train_loss (g-Adam)',
+        'test_accuracy (g-Adam)', 'test_loss (g-Adam)'
+        ]
     entry_widths = [max(11, len(s)) for s in entries]
     templates = []
     for entry, w in zip(entries, entry_widths):
@@ -142,18 +153,22 @@ def main():
             params = get_params(opt_state)
             fx_train = apply_fn(params, x_train)
             fx_test = apply_fn(params, x_test)
-
-        train_loss = loss(params, x_train, y_train, ntk_train_inv).tolist()
+        
+        train_loss = generalized_loss(
+            params, x_train, y_train, ntk_train_inv
+            ).tolist() / x_train.shape[0]
         train_acc = accuracy(fx_train, y_train).tolist()
-        test_loss = loss(params, x_test, y_test, ntk_test_inv).tolist()
+        test_loss = generalized_loss(
+            params, x_test, y_test, ntk_test_inv
+            ).tolist() / x_test.shape[0]
         test_acc = accuracy(fx_test, y_test).tolist()
         
         log = {
             'epoch': i+1,
-            'train_accuracy': train_acc,
-            'train_loss': train_loss,
-            'test_accuracy': test_acc,
-            'test_loss': test_loss
+            'train_accuracy (g-Adam)': train_acc,
+            'train_loss (g-Adam)': train_loss,
+            'test_accuracy (g-Adam)': test_acc,
+            'test_loss (g-Adam)': test_loss
         }
         
         # print report

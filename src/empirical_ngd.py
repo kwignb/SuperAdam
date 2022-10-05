@@ -13,7 +13,7 @@ from neural_tangents import stax
 
 sys.path.append(join(dirname(__file__), ".."))
 from src.natural_gradient import natural_gradient_mse_fn
-from src.utils import read_yaml, create_dataset
+from src.utils import read_yaml, create_dataset, load_dataset
 
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
@@ -32,6 +32,7 @@ def main():
     # parameters in config
     n_classes = cfg.DATA.N_CLASSES
     target_classes = cfg.DATA.TARGET_CLASSES
+    use_npz = cfg.DATA.USE_NPZ
     
     n_layers = cfg.MODEL.N_LAYERS
     n_width = cfg.MODEL.N_WIDTH
@@ -63,7 +64,10 @@ def main():
     
     assert len(target_classes) == n_classes
     
-    x_train, y_train, x_test, y_test, target_classes = create_dataset(cfg)
+    if use_npz:
+        x_train, y_train, x_test, y_test, target_classes = load_dataset(cfg)
+    else:
+        x_train, y_train, x_test, y_test, target_classes = create_dataset(cfg)
     
     if n_classes == 2:
         n_outputs = 1
@@ -118,7 +122,10 @@ def main():
     
     print(f'Training for {epochs} epochs.')
     
-    entries = ['epoch', 'train_accuracy', 'train_loss', 'test_accuracy', 'test_loss']
+    entries = [
+        'epoch', 'train_accuracy (NGD)', 'train_loss (NGD)',
+        'test_accuracy (NGD)', 'test_loss (NGD)'
+        ]
     entry_widths = [max(11, len(s)) for s in entries]
     templates = []
     for entry, w in zip(entries, entry_widths):
@@ -147,10 +154,10 @@ def main():
         
         log = {
             'epoch': i+1,
-            'train_accuracy': train_acc,
-            'train_loss': train_loss,
-            'test_accuracy': test_acc,
-            'test_loss': test_loss
+            'train_accuracy (NGD)': train_acc,
+            'train_loss (NGD)': train_loss,
+            'test_accuracy (NGD)': test_acc,
+            'test_loss (NGD)': test_loss
         }
         
         # print report

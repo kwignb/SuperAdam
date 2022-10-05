@@ -28,6 +28,7 @@ def create_dataset(cfg):
     if target_classes is None:
         target_classes = list(range(n_classes))
         
+    # normalize ||x|| = 1
     for i in range(len(x_train)):
         x_train[i] /= np.linalg.norm(x_train[i])
     for i in range(len(x_test)):
@@ -57,7 +58,7 @@ def _load_tf_dataset(cfg):
     ))
     
     train_images, train_labels, test_images, test_labels = \
-        (ds_train['image'], ds_train['label'], ds_test['image'], ds_test['label'])
+        ds_train['image'], ds_train['label'], ds_test['image'], ds_test['label']
     
     num_classes = ds_builder.info.features['label'].num_classes
     
@@ -109,3 +110,20 @@ def _one_hot(x, k, dtype=np.float32):
 
 def read_yaml(yaml_path):
     return OmegaConf.load(yaml_path)
+
+
+def load_dataset(cfg):
+    
+    n_train = cfg.DATA.TRAIN_SIZE
+    n_test = cfg.DATA.TEST_SIZE
+    n_classes = cfg.DATA.N_CLASSES
+    save_dir = cfg.DATA.SAVE_DIR
+    
+    dataset_path = f'{save_dir}/mnist_train{n_train}_test{n_test}_{n_classes}classes.npz'
+    npz_file = np.load(dataset_path)
+    
+    x_train, y_train = npz_file['arr_0'], npz_file['arr_1']
+    x_test, y_test = npz_file['arr_2'], npz_file['arr_3']
+    target_classes = npz_file['arr_4']
+    
+    return x_train, y_train, x_test, y_test, target_classes
