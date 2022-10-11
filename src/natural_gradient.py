@@ -26,6 +26,7 @@ def flatten_features(kernel):
     feature_size = int(jnp.prod(jnp.array(kernel.shape[2 + half_shape:])))
     transposition = ((0,) + tuple(i + 2 for i in range(half_shape)) +
                     (1,) + tuple(i + 2 + half_shape for i in range(half_shape)))
+
     kernel = jnp.transpose(kernel, transposition)
     
     return jnp.reshape(kernel, (feature_size * n1, feature_size * n2))
@@ -84,22 +85,3 @@ def natural_gradient_mse_fn(f, output_dimension, damping, diag_reg,
         return _vjp(vec, f, params, x)
     
     return natural_gradient_fn
-
-
-def empirical_natural_gradient_fn(f):
-    
-    def fisher_vjp(f_, params, x):
-        _, R_z = jax.jvp(f_, (params,), (x,))
-        _, f_vjp = jax.vjp(f_, params)
-        return f_vjp(R_z)[0]
-
-    def gradient_fn(params, x, y):
-        loss = lambda params, x, y: 0.5 * jnp.mean(
-            jnp.sum((f(params, x) - y) ** 2, axis=1)
-            )
-        grads = jax.grad(loss)(params, x, y)
-        fvp = lambda v: fisher_vjp(loss, params, v)
-        grad_fn, _ = jsp.sparse.linalg.cg(fvp, grads, maxiter=10)
-        return grad_fn
-    
-    return gradient_fn

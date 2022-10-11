@@ -25,7 +25,14 @@ def accuracy(y, y_hat):
     return jnp.mean(jnp.argmax(y, axis=1) == jnp.argmax(y_hat, axis=1))
 
 
+def train_batch(grad_fn, params, batch_x, batch_y, G):
+    grads = grad_fn(params, batch_x, batch_y, G)
+    
+
+
 def main():
+    
+    global opt_state
     
     # load config
     cfg = read_yaml(yaml_path='src/configs/generalized_adam.yaml')
@@ -34,6 +41,8 @@ def main():
     dataset_name = cfg.DATA.DATASET_NAME
     n_classes = cfg.DATA.N_CLASSES
     target_classes = cfg.DATA.TARGET_CLASSES
+    train_num = cfg.DATA.TRAIN_SIZE
+    test_num = cfg.DATA.TEST_SIZE
     use_npz = cfg.DATA.USE_NPZ
     
     n_layers = cfg.MODEL.N_LAYERS
@@ -41,7 +50,9 @@ def main():
     weight_variance = cfg.MODEL.WEIGHT_VARIANCE
     bias_variance = cfg.MODEL.BIAS_VARIANCE
     
+    batch_size = cfg.OPTIMIZER.BATCH_SIZE
     learning_rate = cfg.OPTIMIZER.LEARNING_RATE
+    ntk_calc = cfg.OPTIMIZER.NTKS
     
     epochs = cfg.GENERAL.EPOCHS
     devices = cfg.GENERAL.DEVICES
@@ -86,48 +97,104 @@ def main():
         stax.Dense(n_outputs, W_std=w_std, b_std=b_std, parameterization='ntk')
         )
     
-    init_fn, apply_fn, kernel_fn = stax.serial(*_layers)
+    init_fn, apply_fn, _ = stax.serial(*_layers)
     
     key = random.PRNGKey(random_seed)
     _, params = init_fn(key, (-1, x_train.shape[-1]))
     
+    init_params = params
+    
     opt_init, opt_apply, get_params = optimizers.sgd(learning_rate)
     opt_state = opt_init(params)
     
-    ntk_fn = nt.empirical_ntk_fn(
+    ntk_fn = jit(nt.empirical_ntk_fn(
         f=apply_fn, trace_axes=(), vmap_axes=0,
         implementation=nt.NtkImplementation.JACOBIAN_CONTRACTION
-        )
-
+        ))
         
-    # Get Neural Tangent Kernels
-    ntk_train = flatten_features(ntk_fn(x_train, None, params))
-    ntk_test = flatten_features(ntk_fn(x_test, None, params))
-    
-    # ntk_train = ntk_fn(x_train, None, params)
-    # ntk_test = ntk_fn(x_test, None, params)
-    
-    # Get their inverse
-    ntk_train_inv = jnp.linalg.inv(ntk_train)
-    ntk_test_inv = jnp.linalg.inv(ntk_test)
-    
+    @jax.jit
     def generalized_loss(params, x, y, G):
-        error = flatten_lg(apply_fn(params, x) - y)
-        loss = 0.5 * jnp.mean(error @ G @ error)
+        fx = apply_fn(params, x)
+        error = flatten_lg(fx - y)
+        loss = 0.5 * jnp.mean(error.T @ G @ error)
         return loss
     
+    def train_batch(epoch, batch_idx, params, batch_x, batch_y, G):
+        global opt_state
+        if epoch == 0:
+            return params
+        else:
+            grads = grad_fn(params, batch_x, batch_y, G)
+            opt_state = opt_apply(batch_idx, grads, opt_state)
+            params = get_params(opt_state)
+            return params
+    
+    def train_one_epoch(epoch, params, x_train, y_train, ntk_inv=None):
+        idx = random.permutation(key, train_num)
+        num_batches = train_num // batch_size
+        batch_losses, batch_accs = [], []
+        for i, batch in enumerate(range(num_batches)):
+            batch_idx = idx[batch * batch_size: (batch + 1) * batch_size]
+            batch_x, batch_y = x_train[batch_idx], y_train[batch_idx]
+            if ntk_calc == 'afa':
+                ntk = flatten_features(ntk_fn(batch_x, None, init_params))
+                ntk_inv = jnp.linalg.inv(ntk)
+            elif ntk_calc == 'ofe':
+                if i == 0:
+                    ntk = flatten_features(ntk_fn(batch_x, None, init_params))
+                    ntk_inv = jnp.linalg.inv(ntk)
+            elif ntk_calc == 'ofa':
+                if i == 0 and epoch == 0:
+                    ntk = flatten_features(ntk_fn(batch_x, None, init_params))
+                    ntk_inv = jnp.linalg.inv(ntk)
+            
+            params = train_batch(epoch, batch, params, batch_x, batch_y, ntk_inv)
+            batch_loss = generalized_loss(params, batch_x, batch_y, ntk_inv) / batch_x.shape[0]
+            batch_acc = accuracy(apply_fn(params, batch_x), batch_y)
+            batch_losses.append(batch_loss)
+            batch_accs.append(batch_acc)
+        
+        return params, np.mean(batch_losses), np.mean(batch_accs), ntk_inv
+
+    def valid_batch(params, batch_x, batch_y, G):
+        batch_loss = generalized_loss(params, batch_x, batch_y, G) / batch_x.shape[0]
+        batch_acc = accuracy(apply_fn(params, batch_x), batch_y)
+        return batch_loss, batch_acc
+    
+    def valid_one_epoch(epoch, params, x_test, y_test, ntk_inv=None):
+        idx = random.permutation(key, test_num)
+        num_batches = test_num // batch_size
+        batch_losses, batch_accs = [], []
+        for i, batch in enumerate(range(num_batches)):
+            batch_idx = idx[batch * batch_size: (batch + 1) * batch_size]
+            batch_x, batch_y = x_test[batch_idx], y_test[batch_idx]
+            
+            if ntk_calc == 'afa':
+                ntk = flatten_features(ntk_fn(batch_x, None, init_params))
+                ntk_inv = jnp.linalg.inv(ntk)
+            elif ntk_calc == 'ofe':
+                if i == 0:
+                    ntk = flatten_features(ntk_fn(batch_x, None, init_params))
+                    ntk_inv = jnp.linalg.inv(ntk)
+            elif ntk_calc == 'ofa':
+                if i == 0 and epoch == 0:
+                    ntk = flatten_features(ntk_fn(batch_x, None, init_params))
+                    ntk_inv = jnp.linalg.inv(ntk)
+                    
+            batch_loss, batch_acc = valid_batch(params, batch_x, batch_y, ntk_inv)
+            batch_losses.append(batch_loss)
+            batch_accs.append(batch_acc)
+            
+        return np.mean(batch_losses), np.mean(batch_accs), ntk_inv
+        
     # Define the gradient
-    grad_fn = lambda params, x, y, G: grad(generalized_loss)(params, x, y, G)
+    grad_fn = jit(lambda params, x, y, G: grad(generalized_loss)(params, x, y, G))
     
     print('========================')
     for _, vals in cfg.items():
         for k, v in vals.items():
             print(f'{k}: {v}')
     print('========================')
-    
-    # Get initial values of the network in function space.
-    fx0_train = apply_fn(params, x_train)
-    fx0_test = apply_fn(params, x_test)
     
     print(f'Training for {epochs} epochs.')
     
@@ -147,29 +214,19 @@ def main():
     for epoch in range(epochs+1):
         
         start_time = time.time()
+
+        params, train_loss, train_acc, ntk_inv = train_one_epoch(
+            epoch, params, x_train, y_train, 
+            None if epoch == 0 else ntk_inv
+            )
         
-        if i == 0:
-            # init values
-            fx_train, fx_test = fx0_train, fx0_test
-        else:
-            args = [params, x_train, y_train, ntk_train_inv]
-            grads = grad_fn(*args)
-            opt_state = opt_apply(i, grads, opt_state)
-            params = get_params(opt_state)
-            fx_train = apply_fn(params, x_train)
-            fx_test = apply_fn(params, x_test)
-        
-        train_loss = generalized_loss(
-            params, x_train, y_train, ntk_train_inv
-            ).tolist() / x_train.shape[0]
-        train_acc = accuracy(fx_train, y_train).tolist()
-        test_loss = generalized_loss(
-            params, x_test, y_test, ntk_test_inv
-            ).tolist() / x_test.shape[0]
-        test_acc = accuracy(fx_test, y_test).tolist()
+        test_loss, test_acc, ntk_inv = valid_one_epoch(
+            epoch, params, x_test, y_test, 
+            None if epoch == 0 else ntk_inv
+            )
         
         epoch_time = time.time() - start_time
-        
+
         log = {
             'epoch': epoch,
             'train_accuracy': train_acc,
@@ -195,7 +252,7 @@ def main():
         os.makedirs('results')
         
     df = pd.json_normalize(results)
-    df_name = f'g-adam_{dataset_name}'
+    df_name = f'g-adam_{dataset_name}_{batch_size}_{ntk_calc}_{n_layers}'
     df.to_csv(f'results/{df_name}.csv')
     
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 DATA:
-  DATASET_NAME: mnist
-  TRAIN_SIZE: 256
-  TEST_SIZE: 64
+  DATASET_NAME: fashion_mnist
+  TRAIN_SIZE: 60000
+  TEST_SIZE: 10000
   N_CLASSES: 10
   TARGET_CLASSES: null
   FLATTEN: true
@@ -17,7 +17,8 @@ MODEL:
 
 OPTIMIZER:
   BATCH_SIZE: 128
-  LEARNING_RATE: 0.1
+  LEARNING_RATE: 0.05
+  NTKS: afa # afa(all_for_all), ofa(one_for_all), ofe(one_for_epoch)
 
 GENERAL:
   SEED: 47

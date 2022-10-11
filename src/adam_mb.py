@@ -6,13 +6,12 @@ import pandas as pd
 
 import jax
 import jax.numpy as jnp
-from jax import random
+from jax import grad, jit, random
 from jax.example_libraries import optimizers
 
 from neural_tangents import stax
 
 sys.path.append(join(dirname(__file__), ".."))
-from src.natural_gradient import natural_gradient_mse_fn
 from src.utils import read_yaml, create_dataset, load_dataset
 
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
@@ -24,15 +23,24 @@ def accuracy(y, y_hat):
     return jnp.mean(jnp.argmax(y, axis=1) == jnp.argmax(y_hat, axis=1))
 
 
+def train_batch(grad_fn, params, batch_x, batch_y, G):
+    grads = grad_fn(params, batch_x, batch_y, G)
+    
+
+
 def main():
     
+    global opt_state
+    
     # load config
-    cfg = read_yaml(yaml_path='src/configs/empirical_ngd.yaml')
+    cfg = read_yaml(yaml_path='src/configs/adam.yaml')
     
     # parameters in config
     dataset_name = cfg.DATA.DATASET_NAME
     n_classes = cfg.DATA.N_CLASSES
     target_classes = cfg.DATA.TARGET_CLASSES
+    train_num = cfg.DATA.TRAIN_SIZE
+    test_num = cfg.DATA.TEST_SIZE
     use_npz = cfg.DATA.USE_NPZ
     
     n_layers = cfg.MODEL.N_LAYERS
@@ -42,13 +50,10 @@ def main():
     
     batch_size = cfg.OPTIMIZER.BATCH_SIZE
     learning_rate = cfg.OPTIMIZER.LEARNING_RATE
-    damping = cfg.OPTIMIZER.DAMPING
-    diag_reg = cfg.OPTIMIZER.DIAG_REG
     
     epochs = cfg.GENERAL.EPOCHS
     devices = cfg.GENERAL.DEVICES
     random_seed = cfg.GENERAL.SEED
-    store_on_device = cfg.GENERAL.STORE_ON_DEVICE
     
     # setup device
     if devices is None:
@@ -94,32 +99,64 @@ def main():
     key = random.PRNGKey(random_seed)
     _, params = init_fn(key, (-1, x_train.shape[-1]))
     
-    opt_init, opt_apply, get_params = optimizers.sgd(learning_rate)
+    opt_init, opt_apply, get_params = optimizers.adam(learning_rate)
     opt_state = opt_init(params)
+        
+    @jax.jit
+    def _loss(params, x, y):
+        fx = apply_fn(params, x)
+        loss = 0.5 * jnp.mean(jnp.sum((fx - y)**2, axis=1))
+        return loss
     
-    loss = lambda f, y: 0.5 * jnp.mean(jnp.sum((f - y) ** 2, axis=1))
+    def train_batch(epoch, batch_idx, params, batch_x, batch_y):
+        global opt_state
+        if epoch == 0:
+            return params
+        else:
+            grads = grad_fn(params, batch_x, batch_y)
+            opt_state = opt_apply(batch_idx, grads, opt_state)
+            params = get_params(opt_state)
+            return params
     
-    kwargs = dict(
-        f=apply_fn,
-        output_dimension=n_outputs,
-        damping=damping,
-        diag_reg=diag_reg,
-        kernel_batch_size=batch_size,
-        device_count=devices,
-        store_on_device=store_on_device
-    )
-    
-    grad_fn = natural_gradient_mse_fn(**kwargs)
+    def train_one_epoch(epoch, params, x_train, y_train):
+        idx = random.permutation(key, train_num)
+        num_batches = train_num // batch_size
+        batch_losses, batch_accs = [], []
+        for batch in range(num_batches):
+            batch_idx = idx[batch * batch_size: (batch + 1) * batch_size]
+            batch_x, batch_y = x_train[batch_idx], y_train[batch_idx]
+            params = train_batch(epoch, batch, params, batch_x, batch_y)
+            batch_loss = _loss(params, batch_x, batch_y)
+            batch_acc = accuracy(apply_fn(params, batch_x), batch_y)
+            batch_losses.append(batch_loss)
+            batch_accs.append(batch_acc)
+        return params, np.mean(batch_losses), np.mean(batch_accs)
+
+    def valid_batch(params, batch_x, batch_y):
+        batch_loss = _loss(params, batch_x, batch_y)
+        batch_acc = accuracy(apply_fn(params, batch_x), batch_y)
+        return batch_loss, batch_acc
+
+    def valid_one_epoch(params, x_test, y_test):
+        idx = random.permutation(key, test_num)
+        num_batches = test_num // batch_size
+        batch_losses, batch_accs = [], []
+        for batch in range(num_batches):
+            batch_idx = idx[batch * batch_size: (batch + 1) * batch_size]
+            batch_x, batch_y = x_test[batch_idx], y_test[batch_idx]
+            batch_loss, batch_acc = valid_batch(params, batch_x, batch_y)
+            batch_losses.append(batch_loss)
+            batch_accs.append(batch_acc)
+        return np.mean(batch_losses), np.mean(batch_accs)
+        
+    # Define the gradient
+    grad_fn = jit(lambda params, x, y: grad(_loss)(params, x, y))
     
     print('========================')
     for _, vals in cfg.items():
         for k, v in vals.items():
             print(f'{k}: {v}')
     print('========================')
-    
-    # Get initial values of the network in function space.
-    fx0_train = apply_fn(params, x_train)
-    fx0_test = apply_fn(params, x_test)
     
     print(f'Training for {epochs} epochs.')
     
@@ -140,21 +177,12 @@ def main():
         
         start_time = time.time()
         
-        if i == 0:
-            # init values
-            fx_train, fx_test = fx0_train, fx0_test
-        else:
-            args = [params, x_train, y_train]
-            grads = grad_fn(*args)
-            opt_state = opt_apply(i, grads, opt_state)
-            params = get_params(opt_state)
-            fx_train = apply_fn(params, x_train)
-            fx_test = apply_fn(params, x_test)
-            
-        train_loss = loss(fx_train, y_train).tolist()
-        train_acc = accuracy(fx_train, y_train).tolist()
-        test_loss = loss(fx_test, y_test).tolist()
-        test_acc = accuracy(fx_test, y_test).tolist()
+        params, train_loss, train_acc = train_one_epoch(
+            epoch, params, x_train, y_train
+            )
+        test_loss, test_acc = valid_one_epoch(
+            params, x_test, y_test
+        )
         
         epoch_time = time.time() - start_time
         
@@ -183,9 +211,8 @@ def main():
         os.makedirs('results')
         
     df = pd.json_normalize(results)
-    df_name = f'ngd_{dataset_name}'
+    df_name = f'adam_{dataset_name}_{batch_size}'
     df.to_csv(f'results/{df_name}.csv')
     
 if __name__ == '__main__':
     main()
-    

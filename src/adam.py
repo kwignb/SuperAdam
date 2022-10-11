@@ -6,14 +6,14 @@ import pandas as pd
 
 import jax
 import jax.numpy as jnp
-from jax import random
+from jax import grad, jit, random
 from jax.example_libraries import optimizers
 
 from neural_tangents import stax
 
 sys.path.append(join(dirname(__file__), ".."))
-from src.natural_gradient import natural_gradient_mse_fn
 from src.utils import read_yaml, create_dataset, load_dataset
+# from src.natural_gradient import flatten_lg, flatten_features
 
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
@@ -27,7 +27,7 @@ def accuracy(y, y_hat):
 def main():
     
     # load config
-    cfg = read_yaml(yaml_path='src/configs/empirical_ngd.yaml')
+    cfg = read_yaml(yaml_path='src/configs/adam.yaml')
     
     # parameters in config
     dataset_name = cfg.DATA.DATASET_NAME
@@ -42,13 +42,10 @@ def main():
     
     batch_size = cfg.OPTIMIZER.BATCH_SIZE
     learning_rate = cfg.OPTIMIZER.LEARNING_RATE
-    damping = cfg.OPTIMIZER.DAMPING
-    diag_reg = cfg.OPTIMIZER.DIAG_REG
     
     epochs = cfg.GENERAL.EPOCHS
     devices = cfg.GENERAL.DEVICES
     random_seed = cfg.GENERAL.SEED
-    store_on_device = cfg.GENERAL.STORE_ON_DEVICE
     
     # setup device
     if devices is None:
@@ -94,27 +91,20 @@ def main():
     key = random.PRNGKey(random_seed)
     _, params = init_fn(key, (-1, x_train.shape[-1]))
     
-    opt_init, opt_apply, get_params = optimizers.sgd(learning_rate)
+    opt_init, opt_apply, get_params = optimizers.adam(learning_rate)
     opt_state = opt_init(params)
     
-    loss = lambda f, y: 0.5 * jnp.mean(jnp.sum((f - y) ** 2, axis=1))
+    loss = jit(lambda params, x, y: 0.5 * jnp.mean(
+        jnp.sum((apply_fn(params, x) - y) ** 2, axis=1)
+        ))
     
-    kwargs = dict(
-        f=apply_fn,
-        output_dimension=n_outputs,
-        damping=damping,
-        diag_reg=diag_reg,
-        kernel_batch_size=batch_size,
-        device_count=devices,
-        store_on_device=store_on_device
-    )
-    
-    grad_fn = natural_gradient_mse_fn(**kwargs)
+    # Define the gradient
+    grad_fn = jit(lambda params, x, y: grad(loss)(params, x, y))
     
     print('========================')
-    for _, vals in cfg.items():
-        for k, v in vals.items():
-            print(f'{k}: {v}')
+    for keys, vals in cfg.items():
+        for key, val in vals.items():
+            print(f'{key}: {val}')
     print('========================')
     
     # Get initial values of the network in function space.
@@ -150,10 +140,10 @@ def main():
             params = get_params(opt_state)
             fx_train = apply_fn(params, x_train)
             fx_test = apply_fn(params, x_test)
-            
-        train_loss = loss(fx_train, y_train).tolist()
+        
+        train_loss = loss(params, x_train, y_train).tolist()
         train_acc = accuracy(fx_train, y_train).tolist()
-        test_loss = loss(fx_test, y_test).tolist()
+        test_loss = loss(params, x_test, y_test).tolist()
         test_acc = accuracy(fx_test, y_test).tolist()
         
         epoch_time = time.time() - start_time
@@ -183,9 +173,8 @@ def main():
         os.makedirs('results')
         
     df = pd.json_normalize(results)
-    df_name = f'ngd_{dataset_name}'
+    df_name = f'adam_{dataset_name}'
     df.to_csv(f'results/{df_name}.csv')
     
 if __name__ == '__main__':
     main()
-    

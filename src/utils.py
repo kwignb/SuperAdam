@@ -114,12 +114,13 @@ def read_yaml(yaml_path):
 
 def load_dataset(cfg):
     
+    dataset_name = cfg.DATA.DATASET_NAME
     n_train = cfg.DATA.TRAIN_SIZE
     n_test = cfg.DATA.TEST_SIZE
     n_classes = cfg.DATA.N_CLASSES
     save_dir = cfg.DATA.SAVE_DIR
     
-    dataset_path = f'{save_dir}/mnist_train{n_train}_test{n_test}_{n_classes}classes.npz'
+    dataset_path = f'{save_dir}/{dataset_name}_train{n_train}_test{n_test}_{n_classes}classes.npz'
     npz_file = np.load(dataset_path)
     
     x_train, y_train = npz_file['arr_0'], npz_file['arr_1']
