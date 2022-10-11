@@ -25,11 +25,6 @@ def accuracy(y, y_hat):
     return jnp.mean(jnp.argmax(y, axis=1) == jnp.argmax(y_hat, axis=1))
 
 
-def train_batch(grad_fn, params, batch_x, batch_y, G):
-    grads = grad_fn(params, batch_x, batch_y, G)
-    
-
-
 def main():
     
     global opt_state

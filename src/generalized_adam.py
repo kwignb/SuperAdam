@@ -98,8 +98,7 @@ def main():
         f=apply_fn, trace_axes=(), vmap_axes=0,
         implementation=nt.NtkImplementation.JACOBIAN_CONTRACTION
         )
-
-        
+    
     # Get Neural Tangent Kernels
     ntk_train = flatten_features(ntk_fn(x_train, None, params))
     ntk_test = flatten_features(ntk_fn(x_test, None, params))
